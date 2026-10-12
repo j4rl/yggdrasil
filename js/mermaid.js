@@ -4,7 +4,7 @@ const SHAPES = [
   ['([', '])', 'stadium'],
   ['[[', ']]', 'process'],
   ['[/', '/]', 'io'],
-  ['((', '))', 'process'],
+  ['((', '))', 'topic'],
   ['[', ']', 'process'],
   ['{', '}', 'decision'],
   ['(', ')', 'process'],
@@ -19,7 +19,7 @@ export function toMermaid(doc) {
   for (const n of doc.nodes) {
     const id = ids.get(n.id);
     const t = q(n.text);
-    const shape = { start: `([${t}])`, end: `([${t}])`, decision: `{${t}}`, io: `[/${t}/]` }[n.kind] ?? `[${t}]`;
+    const shape = { start: `([${t}])`, end: `([${t}])`, decision: `{${t}}`, io: `[/${t}/]`, topic: `((${t}))`, state: `(${t})` }[n.kind] ?? `[${t}]`;
     lines.push(`  ${id}${shape}`);
   }
   for (const e of doc.edges) {
@@ -77,7 +77,11 @@ export function fromMermaid(src, type) {
   }
   const hasIn = new Set(doc.edges.map((e) => e.to));
   for (const n of doc.nodes) {
-    if (type === 'org') n.kind = 'box';
+    if (type === 'uml') n.kind = 'class';
+    else if (type === 'org') n.kind = 'box';
+    else if (type === 'mindmap') n.kind = 'topic';
+    else if (type === 'concept') n.kind = 'concept';
+    else if (type === 'state' && n.shape !== 'stadium' && n.shape !== 'decision') n.kind = 'state';
     else if (n.shape === 'stadium') n.kind = hasIn.has(n.id) ? 'end' : 'start';
     else if (n.shape) n.kind = n.shape;
     delete n.shape;

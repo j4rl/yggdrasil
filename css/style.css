@@ -225,3 +225,27 @@ main {
 .node {
     cursor: move;
 }
+fieldset { border: 0; padding: 0; margin: 0; }
+#appearanceFields label, #editorForm label { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 8px 0; }
+#appearanceFields input { width: 85px; }
+#appearanceFields select { max-width: 165px; }
+fieldset:disabled { opacity: .45; }
+input, textarea { font: inherit; padding: 5px; border: 1px solid #aaa; border-radius: 4px; }
+dialog { width: min(480px, 90vw); border: 1px solid #aaa; border-radius: 12px; padding: 22px; }
+dialog::backdrop { background: #0006; }
+#editorForm label { align-items: stretch; flex-direction: column; }
+#editorForm [hidden] { display: none; }
+#editorForm textarea { width: 100%; resize: vertical; }
+.node.selected { filter: drop-shadow(0 0 3px #d33); }
+
+#generatedCode { width: 100%; font: 12px monospace; resize: vertical; }
+#codeStatus { white-space: pre-wrap; }
+
+.node text {
+    fill: var(--bubble-text-fallback, #000);
+}
+@supports (fill: contrast-color(#fff)) {
+    .node text {
+        fill: contrast-color(var(--bubble-background));
+    }
+}

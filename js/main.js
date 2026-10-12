@@ -1,6 +1,7 @@
 import { KINDS, PALETTES, newDoc, makeNode, sampleDoc, autoLayout, uid } from './model.js';
 import { Simulator, validate } from './sim.js';
 import { toMermaid, fromMermaid } from './mermaid.js';
+import { generateCode } from './codegen.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const $ = (id) => document.getElementById(id);
@@ -41,7 +42,7 @@ function wrap(text, max) {
 
 function shapePoints(n) {
   const { x, y, w, h } = n;
-  if (n.kind === 'decision') return `${x},${y - h / 2} ${x + w / 2},${y} ${x},${y + h / 2} ${x - w / 2},${y}`;
+  if (nodeShape(n) === 'diamond') return `${x},${y - h / 2} ${x + w / 2},${y} ${x},${y + h / 2} ${x - w / 2},${y}`;
   const s = 14;
   return `${x - w / 2 + s},${y - h / 2} ${x + w / 2 + s},${y - h / 2} ${x + w / 2 - s},${y + h / 2} ${x - w / 2 - s},${y + h / 2}`;
 }
@@ -51,7 +52,7 @@ function clip(n, tx, ty) {
   const dx = tx - n.x, dy = ty - n.y;
   if (!dx && !dy) return { x: n.x, y: n.y };
   const hw = n.w / 2, hh = n.h / 2;
-  const t = n.kind === 'decision' ? 1 / (Math.abs(dx) / hw + Math.abs(dy) / hh) : Math.min(hw / Math.abs(dx || 1e-9), hh / Math.abs(dy || 1e-9));
+  const t = nodeShape(n) === 'ellipse' ? 1 / Math.sqrt((dx / hw) ** 2 + (dy / hh) ** 2) : nodeShape(n) === 'diamond' ? 1 / (Math.abs(dx) / hw + Math.abs(dy) / hh) : Math.min(hw / Math.abs(dx || 1e-9), hh / Math.abs(dy || 1e-9));
   return { x: n.x + dx * t, y: n.y + dy * t };
 }
 
@@ -79,7 +80,7 @@ function render() {
     const grp = el('g', { class: `edge${sel?.id === e.id ? ' selected' : ''}`, 'data-edge': e.id }, svg);
     el('path', { d: g.d, class: 'hit' }, grp);
     const line = el('path', { d: g.d, class: 'line' }, grp);
-    if (doc.type !== 'org') line.setAttribute('marker-end', 'url(#arrow)');
+    if (!['org', 'mindmap', 'concept'].includes(doc.type)) line.setAttribute('marker-end', 'url(#arrow)');
     if (e.label) el('text', { x: g.lx, y: g.ly }, grp).textContent = e.label;
   }
 
@@ -91,16 +92,32 @@ function render() {
     if (sim && !sim.done && sim.current === n.id) cls.push('active');
     if (sim?.done && sim.error && sim.current === n.id) cls.push('active');
     const g = el('g', { class: cls.join(' '), 'data-node': n.id }, svg);
-    if (n.kind === 'decision' || n.kind === 'io') el('polygon', { points: shapePoints(n), class: 'shape' }, g);
-    else el('rect', { x: n.x - n.w / 2, y: n.y - n.h / 2, width: n.w, height: n.h, rx: n.kind === 'box' ? 6 : n.h / 2 * (n.kind === 'process' ? 0 : 1), class: 'shape' }, g);
-    const lines = wrap(n.text, Math.floor(n.w / 8) - (n.kind === 'decision' ? 6 : 0));
+    const style = appearance(n), shape = nodeShape(n);
+    let outline;
+    if (shape === 'diamond' || shape === 'io') outline = el('polygon', { points: shapePoints(n), class: 'shape' }, g);
+    else if (shape === 'ellipse') outline = el('ellipse', { cx: n.x, cy: n.y, rx: n.w / 2, ry: n.h / 2, class: 'shape' }, g);
+    else outline = el('rect', { x: n.x - n.w / 2, y: n.y - n.h / 2, width: n.w, height: n.h, rx: shape === 'rounded' ? style.radius : 0, class: 'shape' }, g);
+    Object.assign(outline.style, { fill: style.fill, stroke: style.stroke, strokeWidth: style.border });
+    if (sim?.visited.has(n.id)) outline.style.stroke = '#22aa77';
+    if (sim?.current === n.id) { outline.style.stroke = '#ff6600'; outline.style.fill = '#ffe0b3'; }
+    const classDetails = n.kind === 'class' ? [n.attributes, n.methods].filter(Boolean).join('\n') : '';
+    const lines = wrap(n.text + (classDetails ? `\n────────\n${classDetails}` : '') + (n.details && doc.type !== 'algorithm' ? `\n${n.details}` : ''), Math.max(3, Math.floor(n.w / (style.font * .6)) - (shape === 'diamond' ? 6 : 2)));
     const t = el('text', {}, g);
+    const background = outline.style.fill;
+    const hex = background.startsWith('#') ? background.slice(1) : null;
+    const rgb = hex?.length === 6 ? [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16)) : background.match(/\d+/g)?.slice(0, 3).map(Number);
+    const luminance = rgb?.map(c => { const s = c / 255; return s <= .04045 ? s / 12.92 : ((s + .055) / 1.055) ** 2.4; });
+    const fallbackColor = luminance && .2126 * luminance[0] + .7152 * luminance[1] + .0722 * luminance[2] > .179 ? '#000000' : '#ffffff';
+    t.style.setProperty('--bubble-background', background);
+    t.style.setProperty('--bubble-text-fallback', fallbackColor);
+    t.style.fontSize = `${style.font}px`;
     lines.forEach((l, i) => {
-      const ts = el('tspan', { x: n.x, y: n.y + (i - (lines.length - 1) / 2) * 16 }, t);
+      const ts = el('tspan', { x: n.x, y: n.y + (i - (lines.length - 1) / 2) * (style.font * 1.25) }, t);
       ts.textContent = l;
     });
   }
   renderSide();
+  syncAppearance();
   save();
 }
 
@@ -111,6 +128,8 @@ function renderSide() {
   if (doc.type !== 'algorithm') ul.append(Object.assign(document.createElement('li'), { className: 'ok', textContent: 'Semantisk kontroll gäller algoritmflödesschema.' }));
   else if (!probs.length) ul.append(Object.assign(document.createElement('li'), { className: 'ok', textContent: 'Inga problem hittades.' }));
   else probs.forEach((p) => ul.append(Object.assign(document.createElement('li'), { textContent: p })));
+  $('codePanel').hidden = !['algorithm', 'uml'].includes(doc.type);
+  if ($('generatedCode').value) { $('generatedCode').value = ''; $('downloadCode').disabled = true; $('codeStatus').textContent = 'Diagrammet har ändrats. Generera koden igen.'; }
   $('simPanel').style.display = doc.type === 'algorithm' ? '' : 'none';
 
   const vt = $('vars');
@@ -139,7 +158,7 @@ function addNode(kind) {
   const wrapEl = $('canvasWrap');
   const n = makeNode(kind, wrapEl.scrollLeft + 300 + Math.random() * 80, wrapEl.scrollTop + 120 + Math.random() * 80);
   doc.nodes.push(n);
-  if (doc.type === 'org' && sel?.type === 'node') doc.edges.push({ id: uid('e'), from: sel.id, to: n.id, label: '' });
+  if (['org', 'mindmap'].includes(doc.type) && sel?.type === 'node') doc.edges.push({ id: uid('e'), from: sel.id, to: n.id, label: '' });
   sel = { type: 'node', id: n.id };
   stopSim(true);
   render();
@@ -186,21 +205,27 @@ svg.addEventListener('pointerdown', (ev) => {
       return;
     }
     sel = { type: 'node', id: n.id };
+    svg.querySelectorAll('.selected').forEach((g) => g.classList.remove('selected'));
+    nodeEl.classList.add('selected');
+    syncAppearance();
     const start = point(ev);
     const ox = n.x - start.x, oy = n.y - start.y;
     const move = (e) => {
       const p = point(e);
+      if (Math.hypot(p.x - start.x, p.y - start.y) < 4) return;
       n.x = Math.round((p.x + ox) / 10) * 10;
       n.y = Math.round((p.y + oy) / 10) * 10;
       render();
     };
-    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up); };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
-    render();
+    window.addEventListener('pointercancel', up, { once: true });
   } else if (edgeEl) {
     sel = { type: 'edge', id: edgeEl.dataset.edge };
-    render();
+    svg.querySelectorAll('.selected').forEach((g) => g.classList.remove('selected'));
+    edgeEl.classList.add('selected');
+    syncAppearance();
   } else {
     sel = null;
     connectFrom = null;
@@ -208,21 +233,89 @@ svg.addEventListener('pointerdown', (ev) => {
   }
 });
 
-svg.addEventListener('dblclick', (ev) => {
-  const nodeEl = ev.target.closest('[data-node]');
-  const edgeEl = ev.target.closest('[data-edge]');
-  if (nodeEl) {
-    const n = byId(nodeEl.dataset.node);
-    const t = prompt('Text:', n.text);
-    if (t !== null) { n.text = t; stopSim(true); render(); }
-  } else if (edgeEl) {
-    const e = doc.edges.find((x) => x.id === edgeEl.dataset.edge);
-    const t = prompt('Pilens text:', e.label);
-    if (t !== null) { e.label = t; stopSim(true); render(); }
-  }
+let editing = null;
+function nodeShape(n) {
+  return n.style?.shape && n.style.shape !== 'auto' ? n.style.shape : ({ decision: 'diamond', io: 'io', topic: 'ellipse', start: 'rounded', end: 'rounded', box: 'rounded', concept: 'rounded', state: 'rounded' }[n.kind] ?? 'rect');
+}
+function appearance(n) {
+  return { fill: ({ start: '#d9ead3', end: '#d9ead3', decision: '#fff2cc', io: '#cfe2f3', box: '#e8eefc', topic: '#e8eefc', concept: '#d9ead3', state: '#e8eefc' }[n.kind] ?? '#ffffff'), stroke: '#333333', font: 13, border: 1.5, radius: ['start', 'end'].includes(n.kind) ? n.h / 2 : 12, shape: 'auto', ...n.style };
+}
+const appearanceControls = { nodeShape: 'shape', nodeFill: 'fill', nodeStroke: 'stroke', nodeFont: 'font', nodeBorder: 'border', nodeRadius: 'radius', nodeWidth: 'w', nodeHeight: 'h' };
+function syncAppearance() {
+  const n = sel?.type === 'node' ? byId(sel.id) : null;
+  $('appearanceFields').disabled = !n;
+  $('appearanceHint').textContent = n ? 'Ändringarna sparas direkt för den markerade bubblan.' : 'Markera en bubbla för att ändra utseendet.';
+  if (!n) return;
+  const style = appearance(n);
+  for (const [id, key] of Object.entries(appearanceControls)) $(id).value = key === 'w' || key === 'h' ? n[key] : style[key];
+}
+for (const [id, key] of Object.entries(appearanceControls)) $(id).addEventListener('input', () => {
+  const n = sel?.type === 'node' ? byId(sel.id) : null;
+  if (!n || !$(id).checkValidity() || $(id).value === '') return;
+  const value = $(id).type === 'number' ? Number($(id).value) : $(id).value;
+  if (key === 'w' || key === 'h') n[key] = value;
+  else (n.style ??= {})[key] = value;
+  render();
 });
+$('resetAppearance').onclick = () => {
+  const n = byId(sel?.id);
+  if (!n) return;
+  delete n.style;
+  n.w = KINDS[n.kind].w; n.h = KINDS[n.kind].h;
+  render();
+};
+function editorHelp() {
+  const kind = $('editKind').value;
+  $('textLabel').textContent = doc.type === 'algorithm' ? ({ process: 'Tilldelningar', decision: 'Villkor', io: 'Inmatning eller utmatning' }[kind] ?? 'Text') : 'Text';
+  $('editHelp').textContent = doc.type === 'algorithm' ? ({ process: 'Exempel: x = 0; y = x + 1', decision: 'Exempel: x < 10. Koppla en Ja-gren och en Nej-gren.', io: 'Använd input namn eller print uttryck.' }[kind] ?? 'Ange text för start eller slut.') : ({ uml: 'Ange klassnamn. Attribut: name: str. Metod: greet(message: str): str. Koppla klasser och välj arv eller association på kopplingen.', org: 'Ange namn eller enhet. Lägg rollen i detaljfältet.', mindmap: 'Ange ett ämne och eventuella anteckningar.', concept: 'Ange ett begrepp. Namnge relationerna genom att dubbelklicka på kopplingarna.', state: 'Ange tillståndets namn. Namnge händelser på kopplingarna.' }[doc.type] ?? 'Ange text för flödessteget.');
+}
+svg.addEventListener('dblclick', (ev) => {
+  const nodeEl = ev.target.closest('[data-node]'), edgeEl = ev.target.closest('[data-edge]');
+  if (!nodeEl && !edgeEl) return;
+  editing = nodeEl ? { type: 'node', id: nodeEl.dataset.node } : { type: 'edge', id: edgeEl.dataset.edge };
+  const node = editing.type === 'node';
+  const item = node ? byId(editing.id) : doc.edges.find((e) => e.id === editing.id);
+  $('editorTitle').textContent = node ? 'Redigera bubbla' : 'Redigera koppling';
+  $('kindField').hidden = !node;
+  $('detailsField').hidden = !node || ['algorithm', 'uml'].includes(doc.type);
+  $('umlFields').hidden = !node || doc.type !== 'uml';
+  $('relationField').hidden = node || doc.type !== 'uml';
+  $('editAttributes').value = item.attributes ?? '';
+  $('editMethods').value = item.methods ?? '';
+  $('editRelation').value = item.relation ?? 'association';
+  $('detailsLabel').textContent = doc.type === 'org' ? 'Roll / ansvar' : doc.type === 'state' ? 'Åtgärder i tillståndet' : 'Anteckningar';
+  $('editKind').replaceChildren(...PALETTES[doc.type].map((kind) => new Option(KINDS[kind].label, kind)));
+  $('editKind').value = item.kind ?? PALETTES[doc.type][0];
+  $('editText').value = node ? item.text : item.label;
+  $('editDetails').value = item.details ?? '';
+  $('branchField').hidden = node || doc.type !== 'algorithm' || byId(item.from)?.kind !== 'decision';
+  $('editBranch').value = ['Ja', 'Nej'].includes(item.label) ? item.label : '';
+  if (node) editorHelp();
+  else { $('textLabel').textContent = doc.type === 'state' ? 'Händelse / övergång' : 'Kopplingens text'; $('editHelp').textContent = ''; }
+  $('editor').showModal();
+  $('editText').focus();
+});
+$('editKind').onchange = editorHelp;
+$('editBranch').onchange = () => { if ($('editBranch').value) $('editText').value = $('editBranch').value; };
+$('cancelEditor').onclick = () => $('editor').close();
+$('editorForm').onsubmit = (ev) => {
+  ev.preventDefault();
+  if (editing.type === 'node') {
+    const n = byId(editing.id);
+    n.text = $('editText').value;
+    n.kind = $('editKind').value;
+    if (doc.type === 'uml') { n.attributes = $('editAttributes').value; n.methods = $('editMethods').value; }
+    if (doc.type !== 'algorithm') n.details = $('editDetails').value;
+  } else {
+    const edge = doc.edges.find((e) => e.id === editing.id);
+    edge.label = $('editText').value;
+    if (doc.type === 'uml') edge.relation = $('editRelation').value;
+  }
+  stopSim(true); $('editor').close(); render();
+};
 
 document.addEventListener('keydown', (ev) => {
+  if ($('editor').open) return;
   if (['TEXTAREA', 'INPUT', 'SELECT'].includes(ev.target.tagName)) return;
   if (ev.key === 'Delete' || ev.key === 'Backspace') deleteSelected();
   if (ev.key === 'Escape') { connecting = false; connectFrom = null; render(); }
@@ -309,4 +402,22 @@ $('mmImport').onclick = () => {
   try { setDoc(fromMermaid($('mermaid').value, doc.type)); } catch (err) { alert(err.message); }
 };
 
+$('generateCode').onclick = () => {
+  try {
+    $('generatedCode').value = generateCode(doc, $('codeLanguage').value);
+    $('downloadCode').disabled = false;
+    $('codeStatus').textContent = doc.type === 'uml' ? 'Klasskelett genererat. Implementera metodernas innehåll.' : 'Kod genererad. Python körs med Python 3; JavaScript körs med main() i webbläsaren.';
+  } catch (err) {
+    $('generatedCode').value = ''; $('downloadCode').disabled = true;
+    $('codeStatus').textContent = err.message;
+  }
+};
+$('codeLanguage').onchange = () => { $('generatedCode').value = ''; $('downloadCode').disabled = true; $('codeStatus').textContent = ''; };
+$('downloadCode').onclick = () => {
+  if (!$('generatedCode').value) return;
+  const url = URL.createObjectURL(new Blob([$('generatedCode').value], { type: 'text/plain;charset=utf-8' }));
+  const a = document.createElement('a'); a.href = url;
+  a.download = 'yggdrasil.' + ($('codeLanguage').value === 'python' ? 'py' : 'js'); a.click();
+  URL.revokeObjectURL(url);
+};
 setDoc(doc);
