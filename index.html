@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="sv">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Yggdrasil</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+    <header>
+        <h1>Yggdrasil</h1>
+        <select id="docType" title="Diagramtyp">
+            <option value="flowchart">Flödesschema</option>
+            <option value="algorithm">Algoritmflödesschema</option>
+            <option value="org">Organisationsschema</option>
+        </select>
+        <button id="btnNew">Nytt</button>
+        <button id="btnSample">Exempel</button>
+        <span class="sep"></span>
+        <button id="btnConnect" title="Klicka källa, sedan mål (eller Shift+klick)">Koppla</button>
+        <button id="btnDelete">Ta bort</button>
+        <button id="btnLayout">Auto-layout</button>
+        <span class="sep"></span>
+        <button id="btnSave">Spara JSON</button>
+        <button id="btnLoad">Öppna JSON</button>
+        <input type="file" id="fileLoad" accept="application/json" hidden>
+    </header>
+
+    <main>
+        <aside id="palette"></aside>
+        <section id="canvasWrap"><svg id="canvas" width="3000" height="2000"></svg></section>
+        <aside id="side">
+            <div id="simPanel">
+                <h2>Simulering</h2>
+                <div class="row">
+                    <button id="simStep">Steg</button>
+                    <button id="simRun">Kör</button>
+                    <button id="simPause">Pausa</button>
+                    <button id="simReset">Återställ</button>
+                </div>
+                <label>Hastighet <input type="range" id="simSpeed" min="100" max="1500" value="600"></label>
+                <div id="simStatus"></div>
+                <h3>Variabler</h3>
+                <table id="vars"></table>
+                <h3>Utdata</h3>
+                <pre id="output"></pre>
+            </div>
+            <h2>Kontroll</h2>
+            <ul id="problems"></ul>
+            <h2>Mermaid</h2>
+            <textarea id="mermaid" spellcheck="false"></textarea>
+            <div class="row">
+                <button id="mmExport">Exportera</button>
+                <button id="mmImport">Importera</button>
+            </div>
+            <p class="hint">Dubbelklicka nod/kant för att redigera text. Dra för att flytta. Delete tar bort.</p>
+        </aside>
+    </main>
+    <script type="module" src="js/main.js"></script>
+</body>
+
+</html>
