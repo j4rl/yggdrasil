@@ -77,7 +77,8 @@ export function fromMermaid(src, type) {
   }
   const hasIn = new Set(doc.edges.map((e) => e.to));
   for (const n of doc.nodes) {
-    if (type === 'uml') n.kind = 'class';
+    if (type === 'database') n.kind = 'table';
+    else if (type === 'uml') n.kind = 'class';
     else if (type === 'org') n.kind = 'box';
     else if (type === 'mindmap') n.kind = 'topic';
     else if (type === 'concept') n.kind = 'concept';

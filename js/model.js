@@ -122,7 +122,7 @@ export function autoLayout(doc, gapX = 220, gapY = 130) {
     row.forEach((id, i) => {
       const n = byId.get(id);
       n.x = cx + (i - (row.length - 1) / 2) * gapX;
-      n.y = 70 + d * gapY;
+      n.y = Math.max(70, ...doc.nodes.map(node => node.h / 2 + 20)) + d * gapY;
     });
   });
 }

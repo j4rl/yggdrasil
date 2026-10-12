@@ -2,6 +2,7 @@ import { KINDS, PALETTES, newDoc, makeNode, sampleDoc, autoLayout, uid } from '.
 import { Simulator, validate } from './sim.js';
 import { toMermaid, fromMermaid } from './mermaid.js';
 import { generateCode } from './codegen.js';
+import { generateSQL } from './sql.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const $ = (id) => document.getElementById(id);
@@ -14,6 +15,8 @@ let connecting = false;
 let connectFrom = null;
 let sim = null;
 let timer = null;
+let zoom = 1;
+let generatedFrom = null;
 
 function load() {
   try { return JSON.parse(localStorage.getItem(STORE)); } catch { return null; }
@@ -59,6 +62,10 @@ function clip(n, tx, ty) {
 function edgeGeometry(e) {
   const a = byId(e.from), b = byId(e.to);
   if (!a || !b) return null;
+  if (a === b) {
+    const x = a.x + a.w / 2, y = a.y, r = 65;
+    return { d: `M${x},${y - 20} C${x + r},${y - r} ${x + r},${y + r} ${x},${y + 20}`, lx: x + r, ly: y };
+  }
   if (b.y <= a.y && a !== b) {
     const sx = a.x + a.w / 2, ex = b.x + b.w / 2;
     const mx = Math.max(sx, ex) + 70;
@@ -77,11 +84,12 @@ function render() {
   for (const e of doc.edges) {
     const g = edgeGeometry(e);
     if (!g) continue;
-    const grp = el('g', { class: `edge${sel?.id === e.id ? ' selected' : ''}`, 'data-edge': e.id }, svg);
+    const grp = el('g', { class: `edge${sel?.id === e.id ? ' selected' : ''}`, 'data-edge': e.id, tabindex: 0, role: 'button', 'aria-label': `Koppling från ${byId(e.from)?.text ?? ''} till ${byId(e.to)?.text ?? ''}. Enter redigerar.` }, svg);
     el('path', { d: g.d, class: 'hit' }, grp);
     const line = el('path', { d: g.d, class: 'line' }, grp);
     if (!['org', 'mindmap', 'concept'].includes(doc.type)) line.setAttribute('marker-end', 'url(#arrow)');
-    if (e.label) el('text', { x: g.lx, y: g.ly }, grp).textContent = e.label;
+    const label = doc.type === 'database' ? `${e.fromColumn || '?'} → ${e.toColumn || '?'}` : e.label;
+    if (label) el('text', { x: g.lx, y: g.ly }, grp).textContent = label;
   }
 
   for (const n of doc.nodes) {
@@ -91,7 +99,7 @@ function render() {
     if (sim?.visited.has(n.id)) cls.push('visited');
     if (sim && !sim.done && sim.current === n.id) cls.push('active');
     if (sim?.done && sim.error && sim.current === n.id) cls.push('active');
-    const g = el('g', { class: cls.join(' '), 'data-node': n.id }, svg);
+    const g = el('g', { class: cls.join(' '), 'data-node': n.id, tabindex: 0, role: 'button', 'aria-label': `${KINDS[n.kind]?.label ?? 'Del'}: ${n.text}. Enter redigerar.` }, svg);
     const style = appearance(n), shape = nodeShape(n);
     let outline;
     if (shape === 'diamond' || shape === 'io') outline = el('polygon', { points: shapePoints(n), class: 'shape' }, g);
@@ -100,7 +108,7 @@ function render() {
     Object.assign(outline.style, { fill: style.fill, stroke: style.stroke, strokeWidth: style.border });
     if (sim?.visited.has(n.id)) outline.style.stroke = '#22aa77';
     if (sim?.current === n.id) { outline.style.stroke = '#ff6600'; outline.style.fill = '#ffe0b3'; }
-    const classDetails = n.kind === 'class' ? [n.attributes, n.methods].filter(Boolean).join('\n') : '';
+    const classDetails = n.kind === 'table' ? n.columns ?? '' : n.kind === 'class' ? [n.attributes, n.methods].filter(Boolean).join('\n') : '';
     const lines = wrap(n.text + (classDetails ? `\n────────\n${classDetails}` : '') + (n.details && doc.type !== 'algorithm' ? `\n${n.details}` : ''), Math.max(3, Math.floor(n.w / (style.font * .6)) - (shape === 'diamond' ? 6 : 2)));
     const t = el('text', {}, g);
     const background = outline.style.fill;
@@ -121,15 +129,45 @@ function render() {
   save();
 }
 
+const diagramInfo = {
+  flowchart: ['Visa en process steg för steg, från start till mål.', 'En romb visar ett val. Skriv gärna Ja och Nej på grenarna.'],
+  algorithm: ['Bygg en algoritm, följ dess steg och skapa körbar kod.', 'Börja med Start. Processer räknar, villkor väljer och In/Ut läser eller visar värden.'],
+  database: ['Planera tabeller och relationer. Exportera som SQL.', 'Koppla tabellen med främmande nyckel till tabellen den refererar till.'],
+  uml: ['Beskriv klasser, deras egenskaper och hur de hör ihop.', 'Dubbelklicka på en klass för attribut och metoder. Välj arv på en koppling.'],
+  org: ['Visa roller, grupper och vem som ansvarar för vad.', 'Markera en enhet innan du lägger till nästa för att koppla dem automatiskt.'],
+  mindmap: ['Samla idéer och låt dem förgrena sig från ett huvudämne.', 'Markera ett ämne och lägg till ett nytt. Det blir en gren från det markerade ämnet.'],
+  concept: ['Visa begrepp och beskriv sambanden mellan dem.', 'Skriv på kopplingarna vad sambandet betyder, till exempel ”består av”.'],
+  state: ['Visa möjliga tillstånd och händelser som växlar mellan dem.', 'Skriv händelsen på kopplingen, till exempel ”Starta” eller ”Pausa”.'],
+};
+const pieceInfo = {
+  start: ['○', 'Här börjar flödet'], end: ['◉', 'Här slutar flödet'],
+  process: ['▭', 'Ett steg eller en beräkning'], decision: ['◇', 'Ett villkor eller ett val'],
+  io: ['▱', 'Läs in eller visa ett värde'], box: ['▤', 'En person, roll eller grupp'],
+  topic: ['○', 'En idé eller ett ämne'], concept: ['▢', 'Ett begrepp att förklara'],
+  state: ['▢', 'Ett möjligt läge'], class: ['▤', 'Egenskaper och metoder'], table: ['▦', 'Kolumner och nycklar'],
+};
 function renderSide() {
+  $('diagramTitle').textContent = $('docType').selectedOptions[0]?.textContent ?? 'Diagram';
+  $('diagramDescription').textContent = diagramInfo[doc.type]?.[0] ?? '';
+  $('diagramTip').textContent = diagramInfo[doc.type]?.[1] ?? '';
+  $('nodeCount').textContent = `${doc.nodes.length} delar · ${doc.edges.length} kopplingar`;
+  $('emptyCanvas').hidden = doc.nodes.length > 0;
+  $('canvasInstruction').textContent = connecting ? (connectFrom ? 'Välj den andra delen för att skapa kopplingen.' : 'Klicka på delen du vill koppla från.') : 'Dra för att flytta. Dubbelklicka för att skriva.';
+  $('btnConnect').setAttribute('aria-pressed', String(connecting));
+  svg.classList.toggle('connecting', connecting);
+
   const probs = doc.type === 'algorithm' ? validate(doc) : [];
   const ul = $('problems');
   ul.replaceChildren();
-  if (doc.type !== 'algorithm') ul.append(Object.assign(document.createElement('li'), { className: 'ok', textContent: 'Semantisk kontroll gäller algoritmflödesschema.' }));
+  if (doc.type !== 'algorithm') ul.append(Object.assign(document.createElement('li'), { className: 'ok', textContent: 'Tips: följ kopplingarna och kontrollera att texten förklarar din idé.' }));
   else if (!probs.length) ul.append(Object.assign(document.createElement('li'), { className: 'ok', textContent: 'Inga problem hittades.' }));
   else probs.forEach((p) => ul.append(Object.assign(document.createElement('li'), { textContent: p })));
-  $('codePanel').hidden = !['algorithm', 'uml'].includes(doc.type);
-  if ($('generatedCode').value) { $('generatedCode').value = ''; $('downloadCode').disabled = true; $('codeStatus').textContent = 'Diagrammet har ändrats. Generera koden igen.'; }
+  $('checkDescription').textContent = doc.type === 'algorithm' ? 'Vi kontrollerar start, slut, villkor och beräkningar. Testa sedan ett steg i taget.' : doc.type === 'database' ? 'Tabellnamn, kolumner och nycklar kontrolleras när du genererar SQL i Exportera.' : doc.type === 'uml' ? 'Klassnamn, metoder och arv kontrolleras när du genererar kod i Exportera.' : 'Läs diagrammet från början. Är delarna och sambanden lätta att förstå?';
+  $('codeTitle').textContent = doc.type === 'database' ? 'SQL-export' : 'Generera kod';
+  $('codeLanguageField').hidden = doc.type === 'database';
+  $('generateCode').textContent = doc.type === 'database' ? 'Generera SQL' : 'Generera';
+  $('codePanel').hidden = !['algorithm', 'uml', 'database'].includes(doc.type);
+  if ($('generatedCode').value && generatedFrom !== JSON.stringify(doc)) { $('generatedCode').value = ''; $('downloadCode').disabled = true; $('codeStatus').textContent = 'Diagrammet har ändrats. Generera koden igen.'; }
   $('simPanel').style.display = doc.type === 'algorithm' ? '' : 'none';
 
   const vt = $('vars');
@@ -148,7 +186,11 @@ function buildPalette() {
   p.replaceChildren();
   for (const kind of PALETTES[doc.type]) {
     const b = document.createElement('button');
-    b.textContent = `+ ${KINDS[kind].label}`;
+    const [symbol, description] = pieceInfo[kind] ?? ['+', 'Lägg till en del'];
+    const icon = document.createElement('span'); icon.className = 'piece-symbol'; icon.textContent = symbol; icon.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span'); label.textContent = KINDS[kind].label;
+    const help = document.createElement('small'); help.textContent = description; label.append(help);
+    b.append(icon, label); b.setAttribute('aria-label', `Lägg till ${KINDS[kind].label}`);
     b.onclick = () => addNode(kind);
     p.append(b);
   }
@@ -156,16 +198,17 @@ function buildPalette() {
 
 function addNode(kind) {
   const wrapEl = $('canvasWrap');
-  const n = makeNode(kind, wrapEl.scrollLeft + 300 + Math.random() * 80, wrapEl.scrollTop + 120 + Math.random() * 80);
+  const n = makeNode(kind, (wrapEl.scrollLeft + wrapEl.clientWidth / 2) / zoom + Math.random() * 30, (wrapEl.scrollTop + wrapEl.clientHeight / 2) / zoom + Math.random() * 30);
   doc.nodes.push(n);
   if (['org', 'mindmap'].includes(doc.type) && sel?.type === 'node') doc.edges.push({ id: uid('e'), from: sel.id, to: n.id, label: '' });
   sel = { type: 'node', id: n.id };
+  showPanel('panelEdit');
   stopSim(true);
   render();
 }
 
 function connect(a, b) {
-  if (a === b || doc.edges.some((e) => e.from === a && e.to === b)) return;
+  if ((a === b && doc.type !== 'database') || doc.edges.some((e) => e.from === a && e.to === b && doc.type !== 'database')) return;
   const from = byId(a);
   let label = '';
   if (doc.type === 'algorithm' && from.kind === 'decision') {
@@ -189,7 +232,7 @@ function deleteSelected() {
 
 function point(ev) {
   const r = svg.getBoundingClientRect();
-  return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+  return { x: (ev.clientX - r.left) / zoom, y: (ev.clientY - r.top) / zoom };
 }
 
 svg.addEventListener('pointerdown', (ev) => {
@@ -199,12 +242,13 @@ svg.addEventListener('pointerdown', (ev) => {
     const n = byId(nodeEl.dataset.node);
     if (connecting || ev.shiftKey) {
       const from = connectFrom ?? (ev.shiftKey && sel?.type === 'node' ? sel.id : null);
-      if (from) { connect(from, n.id); connectFrom = null; } else connectFrom = n.id;
+      if (from) { connect(from, n.id); connectFrom = null; connecting = false; } else connectFrom = n.id;
       sel = { type: 'node', id: n.id };
       render();
       return;
     }
     sel = { type: 'node', id: n.id };
+    showPanel('panelEdit');
     svg.querySelectorAll('.selected').forEach((g) => g.classList.remove('selected'));
     nodeEl.classList.add('selected');
     syncAppearance();
@@ -223,6 +267,7 @@ svg.addEventListener('pointerdown', (ev) => {
     window.addEventListener('pointercancel', up, { once: true });
   } else if (edgeEl) {
     sel = { type: 'edge', id: edgeEl.dataset.edge };
+    showPanel('panelEdit');
     svg.querySelectorAll('.selected').forEach((g) => g.classList.remove('selected'));
     edgeEl.classList.add('selected');
     syncAppearance();
@@ -243,6 +288,16 @@ function appearance(n) {
 const appearanceControls = { nodeShape: 'shape', nodeFill: 'fill', nodeStroke: 'stroke', nodeFont: 'font', nodeBorder: 'border', nodeRadius: 'radius', nodeWidth: 'w', nodeHeight: 'h' };
 function syncAppearance() {
   const n = sel?.type === 'node' ? byId(sel.id) : null;
+  $('selectionEmpty').hidden = !!sel;
+  $('selectionDetails').hidden = !sel;
+  $('appearance').hidden = !n;
+  $('btnEdit').disabled = !sel;
+  $('btnDelete').disabled = !sel;
+  if (sel) {
+    const edge = sel.type === 'edge' ? doc.edges.find(e => e.id === sel.id) : null;
+    $('selectionKind').textContent = n ? KINDS[n.kind]?.label ?? 'Del' : 'Koppling';
+    $('selectionTitle').textContent = n ? n.text || 'Namnlös del' : `${byId(edge?.from)?.text ?? ''} → ${byId(edge?.to)?.text ?? ''}`;
+  }
   $('appearanceFields').disabled = !n;
   $('appearanceHint').textContent = n ? 'Ändringarna sparas direkt för den markerade bubblan.' : 'Markera en bubbla för att ändra utseendet.';
   if (!n) return;
@@ -267,17 +322,27 @@ $('resetAppearance').onclick = () => {
 function editorHelp() {
   const kind = $('editKind').value;
   $('textLabel').textContent = doc.type === 'algorithm' ? ({ process: 'Tilldelningar', decision: 'Villkor', io: 'Inmatning eller utmatning' }[kind] ?? 'Text') : 'Text';
-  $('editHelp').textContent = doc.type === 'algorithm' ? ({ process: 'Exempel: x = 0; y = x + 1', decision: 'Exempel: x < 10. Koppla en Ja-gren och en Nej-gren.', io: 'Använd input namn eller print uttryck.' }[kind] ?? 'Ange text för start eller slut.') : ({ uml: 'Ange klassnamn. Attribut: name: str. Metod: greet(message: str): str. Koppla klasser och välj arv eller association på kopplingen.', org: 'Ange namn eller enhet. Lägg rollen i detaljfältet.', mindmap: 'Ange ett ämne och eventuella anteckningar.', concept: 'Ange ett begrepp. Namnge relationerna genom att dubbelklicka på kopplingarna.', state: 'Ange tillståndets namn. Namnge händelser på kopplingarna.' }[doc.type] ?? 'Ange text för flödessteget.');
+  $('editHelp').textContent = doc.type === 'algorithm' ? ({ process: 'Exempel: x = 0; y = x + 1', decision: 'Exempel: x < 10. Koppla en Ja-gren och en Nej-gren.', io: 'Använd input namn eller print uttryck.' }[kind] ?? 'Ange text för start eller slut.') : ({ database: 'Ange tabellnamn och kolumner. Koppla den refererande tabellen till den refererade tabellen och välj kolumner på kopplingen.', uml: 'Ange klassnamn. Attribut: name: str. Metod: greet(message: str): str. Koppla klasser och välj arv eller association på kopplingen.', org: 'Ange namn eller enhet. Lägg rollen i detaljfältet.', mindmap: 'Ange ett ämne och eventuella anteckningar.', concept: 'Ange ett begrepp. Namnge relationerna genom att dubbelklicka på kopplingarna.', state: 'Ange tillståndets namn. Namnge händelser på kopplingarna.' }[doc.type] ?? 'Ange text för flödessteget.');
 }
-svg.addEventListener('dblclick', (ev) => {
-  const nodeEl = ev.target.closest('[data-node]'), edgeEl = ev.target.closest('[data-edge]');
-  if (!nodeEl && !edgeEl) return;
-  editing = nodeEl ? { type: 'node', id: nodeEl.dataset.node } : { type: 'edge', id: edgeEl.dataset.edge };
+function openEditor(selection) {
+  if (!selection) return;
+  editing = { ...selection };
   const node = editing.type === 'node';
   const item = node ? byId(editing.id) : doc.edges.find((e) => e.id === editing.id);
   $('editorTitle').textContent = node ? 'Redigera bubbla' : 'Redigera koppling';
   $('kindField').hidden = !node;
-  $('detailsField').hidden = !node || ['algorithm', 'uml'].includes(doc.type);
+  $('detailsField').hidden = !node || ['algorithm', 'uml', 'database'].includes(doc.type);
+  $('databaseFields').hidden = !node || doc.type !== 'database';
+  $('foreignKeyFields').hidden = node || doc.type !== 'database';
+  $('editColumns').value = item.columns ?? 'id INTEGER PK';
+  if (!node && doc.type === 'database') {
+    for (const [id, tableId, selected] of [['editFromColumn', item.from, item.fromColumn], ['editToColumn', item.to, item.toColumn]]) {
+      const names = (byId(tableId)?.columns ?? '').split('\n').map(line => /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+/.exec(line)?.[1]).filter(Boolean);
+      $(id).replaceChildren(new Option('Välj kolumn', ''), ...names.map(name => new Option(name, name)));
+      $(id).value = selected ?? '';
+    }
+    $('editOnDelete').value = item.onDelete ?? 'RESTRICT';
+  }
   $('umlFields').hidden = !node || doc.type !== 'uml';
   $('relationField').hidden = node || doc.type !== 'uml';
   $('editAttributes').value = item.attributes ?? '';
@@ -290,11 +355,18 @@ svg.addEventListener('dblclick', (ev) => {
   $('editDetails').value = item.details ?? '';
   $('branchField').hidden = node || doc.type !== 'algorithm' || byId(item.from)?.kind !== 'decision';
   $('editBranch').value = ['Ja', 'Nej'].includes(item.label) ? item.label : '';
+  $('textLabel').parentElement.hidden = !node && doc.type === 'database';
   if (node) editorHelp();
   else { $('textLabel').textContent = doc.type === 'state' ? 'Händelse / övergång' : 'Kopplingens text'; $('editHelp').textContent = ''; }
   $('editor').showModal();
-  $('editText').focus();
+  (node || doc.type !== 'database' ? $('editText') : $('editFromColumn')).focus();
+}
+svg.addEventListener('dblclick', (ev) => {
+  const node = ev.target.closest('[data-node]'), edge = ev.target.closest('[data-edge]');
+  if (node || edge) openEditor(node ? { type: 'node', id: node.dataset.node } : { type: 'edge', id: edge.dataset.edge });
 });
+$('btnEdit').onclick = $('editSelected').onclick = () => openEditor(sel);
+
 $('editKind').onchange = editorHelp;
 $('editBranch').onchange = () => { if ($('editBranch').value) $('editText').value = $('editBranch').value; };
 $('cancelEditor').onclick = () => $('editor').close();
@@ -304,11 +376,13 @@ $('editorForm').onsubmit = (ev) => {
     const n = byId(editing.id);
     n.text = $('editText').value;
     n.kind = $('editKind').value;
+    if (doc.type === 'database') n.columns = $('editColumns').value;
     if (doc.type === 'uml') { n.attributes = $('editAttributes').value; n.methods = $('editMethods').value; }
     if (doc.type !== 'algorithm') n.details = $('editDetails').value;
   } else {
     const edge = doc.edges.find((e) => e.id === editing.id);
     edge.label = $('editText').value;
+    if (doc.type === 'database') { edge.fromColumn = $('editFromColumn').value; edge.toColumn = $('editToColumn').value; edge.onDelete = $('editOnDelete').value; }
     if (doc.type === 'uml') edge.relation = $('editRelation').value;
   }
   stopSim(true); $('editor').close(); render();
@@ -363,10 +437,14 @@ function setDoc(d) {
   doc = d;
   sel = null;
   connectFrom = null;
+  connecting = false;
+  generatedFrom = null;
+  $('codeStatus').textContent = '';
   $('docType').value = doc.type;
   buildPalette();
   render();
   $('mermaid').value = toMermaid(doc);
+  requestAnimationFrame(fitDiagram);
 }
 
 $('docType').onchange = (e) => {
@@ -378,7 +456,7 @@ $('btnNew').onclick = () => { if (!doc.nodes.length || confirm('Rensa diagrammet
 $('btnSample').onclick = () => setDoc(sampleDoc(doc.type));
 $('btnConnect').onclick = () => { connecting = !connecting; connectFrom = null; render(); };
 $('btnDelete').onclick = deleteSelected;
-$('btnLayout').onclick = () => { autoLayout(doc); render(); };
+$('btnLayout').onclick = () => { autoLayout(doc); render(); fitDiagram(); };
 $('btnSave').onclick = () => {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }));
@@ -404,9 +482,10 @@ $('mmImport').onclick = () => {
 
 $('generateCode').onclick = () => {
   try {
-    $('generatedCode').value = generateCode(doc, $('codeLanguage').value);
+    $('generatedCode').value = doc.type === 'database' ? generateSQL(doc) : generateCode(doc, $('codeLanguage').value);
+    generatedFrom = JSON.stringify(doc);
     $('downloadCode').disabled = false;
-    $('codeStatus').textContent = doc.type === 'uml' ? 'Klasskelett genererat. Implementera metodernas innehåll.' : 'Kod genererad. Python körs med Python 3; JavaScript körs med main() i webbläsaren.';
+    $('codeStatus').textContent = doc.type === 'database' ? 'SQL-schema genererat för SQLite.' : doc.type === 'uml' ? 'Klasskelett genererat. Implementera metodernas innehåll.' : 'Kod genererad. Python körs med Python 3; JavaScript körs med main() i webbläsaren.';
   } catch (err) {
     $('generatedCode').value = ''; $('downloadCode').disabled = true;
     $('codeStatus').textContent = err.message;
@@ -417,7 +496,69 @@ $('downloadCode').onclick = () => {
   if (!$('generatedCode').value) return;
   const url = URL.createObjectURL(new Blob([$('generatedCode').value], { type: 'text/plain;charset=utf-8' }));
   const a = document.createElement('a'); a.href = url;
-  a.download = 'yggdrasil.' + ($('codeLanguage').value === 'python' ? 'py' : 'js'); a.click();
+  a.download = 'yggdrasil.' + (doc.type === 'database' ? 'sql' : $('codeLanguage').value === 'python' ? 'py' : 'js'); a.click();
   URL.revokeObjectURL(url);
 };
+function showPanel(id, focus = false) {
+  for (const tab of document.querySelectorAll('[data-panel]')) {
+    const active = tab.dataset.panel === id;
+    tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1;
+    $(tab.dataset.panel).hidden = !active;
+    if (active && focus) tab.focus();
+  }
+}
+const tabs = [...document.querySelectorAll('[data-panel]')];
+tabs.forEach((tab, i) => {
+  tab.onclick = () => showPanel(tab.dataset.panel);
+  tab.onkeydown = ev => {
+    let target;
+    if (ev.key === 'ArrowRight') target = (i + 1) % tabs.length;
+    if (ev.key === 'ArrowLeft') target = (i + tabs.length - 1) % tabs.length;
+    if (ev.key === 'Home') target = 0;
+    if (ev.key === 'End') target = tabs.length - 1;
+    if (target !== undefined) { ev.preventDefault(); showPanel(tabs[target].dataset.panel, true); }
+  };
+});
+function setZoom(value) {
+  const wrap = $('canvasWrap');
+  const cx = (wrap.scrollLeft + wrap.clientWidth / 2) / zoom;
+  const cy = (wrap.scrollTop + wrap.clientHeight / 2) / zoom;
+  zoom = Math.max(.25, Math.min(2, value));
+  svg.setAttribute('width', 3000 * zoom); svg.setAttribute('height', 2000 * zoom);
+  $('zoomLevel').textContent = `${Math.round(zoom * 100)}%`;
+  wrap.scrollLeft = cx * zoom - wrap.clientWidth / 2;
+  wrap.scrollTop = cy * zoom - wrap.clientHeight / 2;
+}
+function fitDiagram() {
+  const wrap = $('canvasWrap');
+  if (!doc.nodes.length) { setZoom(1); wrap.scrollLeft = 0; wrap.scrollTop = 0; return; }
+  const left = Math.min(...doc.nodes.map(n => n.x - n.w / 2));
+  const right = Math.max(...doc.nodes.map(n => n.x + n.w / 2)) + 80;
+  const top = Math.min(...doc.nodes.map(n => n.y - n.h / 2));
+  const bottom = Math.max(...doc.nodes.map(n => n.y + n.h / 2));
+  setZoom(Math.min(1.2, (wrap.clientWidth - 70) / (right - left), (wrap.clientHeight - 100) / (bottom - top)));
+  wrap.scrollLeft = (left + right) / 2 * zoom - wrap.clientWidth / 2;
+  wrap.scrollTop = (top + bottom) / 2 * zoom - wrap.clientHeight / 2;
+}
+svg.addEventListener('focusin', ev => {
+  const node = ev.target.closest('[data-node]'), edge = ev.target.closest('[data-edge]');
+  if (!node && !edge) return;
+  sel = node ? { type: 'node', id: node.dataset.node } : { type: 'edge', id: edge.dataset.edge };
+  svg.querySelectorAll('.selected').forEach(g => g.classList.remove('selected'));
+  (node ?? edge).classList.add('selected'); syncAppearance();
+});
+svg.addEventListener('keydown', ev => {
+  if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEditor(sel); }
+});
+let resizeFrame;
+window.addEventListener('resize', () => { cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(fitDiagram); });
+if (window.matchMedia('(max-width: 520px)').matches) document.querySelector('.quick-guide').open = false;
+$('zoomIn').onclick = () => setZoom(zoom + .1);
+$('zoomOut').onclick = () => setZoom(zoom - .1);
+$('fitDiagram').onclick = fitDiagram;
+$('emptySample').onclick = () => $('btnSample').click();
+$('exportJson').onclick = () => $('btnSave').click();
+document.querySelectorAll('.menu-content button').forEach(button => button.addEventListener('click', () => document.querySelector('.file-menu').open = false));
+document.addEventListener('pointerdown', ev => { if (!ev.target.closest('.file-menu')) document.querySelector('.file-menu').open = false; });
+$('generatedCode').placeholder = 'Din kod visas här när du klickar på Generera.';
 setDoc(doc);
