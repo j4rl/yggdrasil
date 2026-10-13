@@ -1,13 +1,27 @@
 import { validate, parseExpr, compileStatements, compileIO, labelKind } from './sim.js';
+import { MATH_FUNCTIONS } from './math.js';
 
 const quote = JSON.stringify;
 function expression(src, python) {
   parseExpr(src);
-  const tokens = src.match(/"[^"]*"|'[^']*'|[\p{L}_][\p{L}\p{N}_]*|\d+(?:\.\d+)?|==|!=|<=|>=|&&|\|\||[-+*\/%()<>!]/gu) ?? [];
+  const tokens = src.match(/"[^"]*"|'[^']*'|[\p{L}_][\p{L}\p{N}_]*|\d+(?:\.\d+)?|==|!=|<=|>=|&&|\|\||[-+*\/%(),<>!]/gu) ?? [];
   let pos = 0;
   const levels = [['||'], ['&&'], ['==', '!='], ['<', '<=', '>', '>='], ['+', '-'], ['*', '/', '%']];
   function primary() {
     const t = tokens[pos++];
+    if (/^[\p{L}_]/u.test(t) && tokens[pos] === '(') {
+      pos++;
+      const args = [];
+      if (tokens[pos] !== ')') {
+        args.push(binary(0));
+        while (tokens[pos] === ',') { pos++; args.push(binary(0)); }
+      }
+      pos++;
+      if (python && t === 'round') return `math.floor(${args[0]} + 0.5)`;
+      if (!python && t === 'rad') return `(${args[0]} * Math.PI / 180)`;
+      if (!python && t === 'deg') return `(${args[0]} * 180 / Math.PI)`;
+      return `${MATH_FUNCTIONS[t][python ? 'py' : 'js']}(${args.join(', ')})`;
+    }
     if (t === '(') { const result = binary(0); pos++; return `(${result})`; }
     if (/^["']/.test(t)) return quote(t.slice(1, -1));
     if (['true', 'sant'].includes(t)) return python ? 'True' : 'true';
@@ -43,6 +57,7 @@ function algorithm(doc, python) {
   if (ids.size !== doc.nodes.length || doc.edges.some(e => !ids.has(e.from) || !ids.has(e.to))) throw new Error('Ogiltiga nod-ID eller kopplingar.');
   const start = ids.get(doc.nodes.find(n => n.kind === 'start').id);
   const lines = python ? [
+    'import math', 'import random', '',
     '# Genererad från Yggdrasil. Kör med Python 3.',
     'def read_value(name):', '    raw = input(name + ": ")', '    try:', '        return float(raw) if raw.strip() else raw', '    except ValueError:', '        return raw', '',
     'def main():', '    v = {}', `    state = ${start}`, '    steps = 0', '    while state is not None:', '        steps += 1', '        if steps > 10000:', '            raise RuntimeError("För många steg")'

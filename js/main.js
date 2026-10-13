@@ -3,13 +3,14 @@ import { Simulator, validate } from './sim.js';
 import { toMermaid, fromMermaid } from './mermaid.js';
 import { generateCode } from './codegen.js';
 import { generateSQL } from './sql.js';
+import { routeConnection, routeGeometry } from './routing.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const $ = (id) => document.getElementById(id);
 const svg = $('canvas');
 const STORE = 'yggdrasil.doc';
 
-let doc = load() ?? sampleDoc('algorithm');
+let doc = load() ?? newDoc('algorithm');
 let sel = null; // { type: 'node' | 'edge', id }
 let connecting = false;
 let connectFrom = null;
@@ -59,20 +60,24 @@ function clip(n, tx, ty) {
   return { x: n.x + dx * t, y: n.y + dy * t };
 }
 
-function edgeGeometry(e) {
+function edgeGeometry(e, previousRoutes = []) {
   const a = byId(e.from), b = byId(e.to);
   if (!a || !b) return null;
   if (a === b) {
     const x = a.x + a.w / 2, y = a.y, r = 65;
     return { d: `M${x},${y - 20} C${x + r},${y - r} ${x + r},${y + r} ${x},${y + 20}`, lx: x + r, ly: y };
   }
-  if (b.y <= a.y && a !== b) {
-    const sx = a.x + a.w / 2, ex = b.x + b.w / 2;
-    const mx = Math.max(sx, ex) + 70;
-    return { d: `M${sx},${a.y} C${mx},${a.y} ${mx},${b.y} ${ex},${b.y}`, lx: (sx + ex) / 2 * 0.25 + mx * 0.75, ly: (a.y + b.y) / 2 };
-  }
   const p = clip(a, b.x, b.y), r = clip(b, a.x, a.y);
-  return { d: `M${p.x},${p.y} L${r.x},${r.y}`, lx: (p.x + r.x) / 2, ly: (p.y + r.y) / 2 - 8 };
+  // Rectangular routing bounds need cardinal attachment points for curved shapes.
+  const direct = routeConnection(p, r, doc.nodes.filter(n => n !== a && n !== b), a.id, b.id, previousRoutes);
+  if (direct.length === 2) { previousRoutes.push(direct); return routeGeometry(direct); }
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const horizontal = Math.abs(dx) / (a.w + b.w) >= Math.abs(dy) / (a.h + b.h);
+  const start = horizontal ? clip(a, a.x + Math.sign(dx || 1), a.y) : clip(a, a.x, a.y + Math.sign(dy || 1));
+  const end = horizontal ? clip(b, b.x - Math.sign(dx || 1), b.y) : clip(b, b.x, b.y - Math.sign(dy || 1));
+  const route = routeConnection(start, end, doc.nodes, a.id, b.id, previousRoutes);
+  previousRoutes.push(route);
+  return routeGeometry(route);
 }
 
 function render() {
@@ -81,8 +86,9 @@ function render() {
   const mk = el('marker', { id: 'arrow', viewBox: '0 0 10 10', refX: 10, refY: 5, markerWidth: 8, markerHeight: 8, orient: 'auto-start-reverse' }, defs);
   el('path', { d: 'M0,0 L10,5 L0,10 z', fill: '#333' }, mk);
 
+  const previousRoutes = [];
   for (const e of doc.edges) {
-    const g = edgeGeometry(e);
+    const g = edgeGeometry(e, previousRoutes);
     if (!g) continue;
     const grp = el('g', { class: `edge${sel?.id === e.id ? ' selected' : ''}`, 'data-edge': e.id, tabindex: 0, role: 'button', 'aria-label': `Koppling från ${byId(e.from)?.text ?? ''} till ${byId(e.to)?.text ?? ''}. Enter redigerar.` }, svg);
     el('path', { d: g.d, class: 'hit' }, grp);
@@ -119,6 +125,62 @@ function render() {
     t.style.setProperty('--bubble-background', background);
     t.style.setProperty('--bubble-text-fallback', fallbackColor);
     t.style.fontSize = `${style.font}px`;
+    if (n.kind === 'table' || n.kind === 'class') {
+      const padding = 14;
+      const left = n.x - n.w / 2 + padding;
+      const right = n.x + n.w / 2 - padding;
+      const top = n.y - n.h / 2;
+      const lineHeight = style.font * 1.5;
+      const headerHeight = lineHeight + padding * 2;
+      el('tspan', { x: n.x, y: top + headerHeight / 2, 'font-weight': 600 }, t).textContent = n.text;
+      el('line', { x1: left - padding, x2: right + padding, y1: top + headerHeight, y2: top + headerHeight, stroke: style.stroke, 'stroke-width': style.border, 'pointer-events': 'none' }, g);
+      let rowY = top + headerHeight + padding + lineHeight / 2;
+      if (n.kind === 'class') {
+        const max = Math.max(3, Math.floor((n.w - padding * 2) / (style.font * .6)));
+        const sections = [n.attributes ?? '', n.methods ?? ''];
+        if (n.details) sections.push(n.details);
+        sections.forEach((section, index) => {
+          if (index) {
+            const dividerY = rowY - lineHeight / 2;
+            el('line', { x1: left - padding, x2: right + padding, y1: dividerY, y2: dividerY, stroke: style.stroke, 'stroke-width': style.border, 'pointer-events': 'none' }, g);
+            rowY += padding;
+          }
+          const rows = section.split('\n').map(line => line.trim()).filter(Boolean);
+          for (const row of rows) {
+            // A method's parameter types belong to its signature, not its return type.
+            const parts = index === 0 ? /^([^:]+):\s*(.+)$/.exec(row) : index === 1 ? /^(.*\))\s*:\s*(.+)$/.exec(row) : null;
+            if (parts) {
+              const halfMax = Math.max(3, Math.floor((n.w / 2 - padding * 1.5) / (style.font * .6)));
+              const names = wrap(parts[1].trim(), halfMax);
+              const types = wrap(parts[2].trim(), halfMax);
+              names.forEach((line, i) => el('tspan', { x: left, y: rowY + i * lineHeight, style: 'text-anchor:start' }, t).textContent = line);
+              types.forEach((line, i) => el('tspan', { x: right, y: rowY + i * lineHeight, style: 'text-anchor:end' }, t).textContent = line);
+              rowY += Math.max(names.length, types.length) * lineHeight;
+            } else {
+              const wrapped = wrap(row, max);
+              wrapped.forEach((line, i) => el('tspan', { x: left, y: rowY + i * lineHeight, style: 'text-anchor:start' }, t).textContent = line);
+              rowY += wrapped.length * lineHeight;
+            }
+          }
+          if (!rows.length) rowY += lineHeight;
+        });
+        continue;
+      }
+      for (const column of (n.columns ?? '').split('\n').map(line => line.trim()).filter(Boolean)) {
+        const [, name, definition = ''] = /^(\S+)(?:\s+(.+))?$/.exec(column);
+        const max = Math.max(3, Math.floor((n.w / 2 - padding * 1.5) / (style.font * .6)));
+        const names = wrap(name, max);
+        const definitions = wrap(definition, max);
+        names.forEach((line, i) => {
+          el('tspan', { x: left, y: rowY + i * lineHeight, style: 'text-anchor:start' }, t).textContent = line;
+        });
+        definitions.forEach((line, i) => {
+          el('tspan', { x: right, y: rowY + i * lineHeight, style: 'text-anchor:end' }, t).textContent = line;
+        });
+        rowY += Math.max(names.length, definitions.length) * lineHeight;
+      }
+      continue;
+    }
     lines.forEach((l, i) => {
       const ts = el('tspan', { x: n.x, y: n.y + (i - (lines.length - 1) / 2) * (style.font * 1.25) }, t);
       ts.textContent = l;
@@ -208,15 +270,42 @@ function addNode(kind) {
 }
 
 function connect(a, b) {
-  if ((a === b && doc.type !== 'database') || doc.edges.some((e) => e.from === a && e.to === b && doc.type !== 'database')) return;
   const from = byId(a);
+  if (!from || !byId(b) || (a === b && doc.type !== 'database') || doc.edges.some((e) => e.from === a && e.to === b && doc.type !== 'database')) return null;
   let label = '';
   if (doc.type === 'algorithm' && from.kind === 'decision') {
     const used = doc.edges.filter((e) => e.from === a).map((e) => e.label);
     label = used.includes('Ja') ? 'Nej' : 'Ja';
   }
-  doc.edges.push({ id: uid('e'), from: a, to: b, label });
+  const edge = { id: uid('e'), from: a, to: b, label };
+  doc.edges.push(edge);
   stopSim(true);
+  return edge;
+}
+
+function chooseConnection(id, shiftKey = false) {
+  const from = connectFrom ?? (shiftKey && sel?.type === 'node' ? sel.id : null);
+  if (!from) {
+    connectFrom = id;
+    connecting = true;
+    sel = { type: 'node', id };
+    render();
+    return;
+  }
+  const edge = connect(from, id);
+  if (!edge) {
+    connectFrom = from;
+    connecting = true;
+    render();
+    $('canvasInstruction').textContent = from === id ? 'Välj en annan del för att skapa kopplingen.' : 'Kopplingen finns redan. Välj en annan del.';
+    return;
+  }
+  connectFrom = null;
+  connecting = false;
+  sel = { type: 'edge', id: edge.id };
+  showPanel('panelEdit');
+  render();
+  if (doc.type === 'database') openEditor(sel);
 }
 
 function deleteSelected() {
@@ -225,6 +314,7 @@ function deleteSelected() {
     doc.nodes = doc.nodes.filter((n) => n.id !== sel.id);
     doc.edges = doc.edges.filter((e) => e.from !== sel.id && e.to !== sel.id);
   } else doc.edges = doc.edges.filter((e) => e.id !== sel.id);
+  if (connectFrom && !byId(connectFrom)) connectFrom = null;
   sel = null;
   stopSim(true);
   render();
@@ -241,10 +331,7 @@ svg.addEventListener('pointerdown', (ev) => {
   if (nodeEl) {
     const n = byId(nodeEl.dataset.node);
     if (connecting || ev.shiftKey) {
-      const from = connectFrom ?? (ev.shiftKey && sel?.type === 'node' ? sel.id : null);
-      if (from) { connect(from, n.id); connectFrom = null; connecting = false; } else connectFrom = n.id;
-      sel = { type: 'node', id: n.id };
-      render();
+      chooseConnection(n.id, ev.shiftKey);
       return;
     }
     sel = { type: 'node', id: n.id };
@@ -321,12 +408,15 @@ $('resetAppearance').onclick = () => {
 };
 function editorHelp() {
   const kind = $('editKind').value;
+  $('arithmeticLibrary').hidden = doc.type !== 'algorithm' || editing?.type !== 'node' || kind !== 'process';
   $('textLabel').textContent = doc.type === 'algorithm' ? ({ process: 'Tilldelningar', decision: 'Villkor', io: 'Inmatning eller utmatning' }[kind] ?? 'Text') : 'Text';
   $('editHelp').textContent = doc.type === 'algorithm' ? ({ process: 'Exempel: x = 0; y = x + 1', decision: 'Exempel: x < 10. Koppla en Ja-gren och en Nej-gren.', io: 'Använd input namn eller print uttryck.' }[kind] ?? 'Ange text för start eller slut.') : ({ database: 'Ange tabellnamn och kolumner. Koppla den refererande tabellen till den refererade tabellen och välj kolumner på kopplingen.', uml: 'Ange klassnamn. Attribut: name: str. Metod: greet(message: str): str. Koppla klasser och välj arv eller association på kopplingen.', org: 'Ange namn eller enhet. Lägg rollen i detaljfältet.', mindmap: 'Ange ett ämne och eventuella anteckningar.', concept: 'Ange ett begrepp. Namnge relationerna genom att dubbelklicka på kopplingarna.', state: 'Ange tillståndets namn. Namnge händelser på kopplingarna.' }[doc.type] ?? 'Ange text för flödessteget.');
 }
 function openEditor(selection) {
   if (!selection) return;
   editing = { ...selection };
+  $('arithmeticLibrary').hidden = true;
+  $('arithmeticLibrary').open = false;
   const node = editing.type === 'node';
   const item = node ? byId(editing.id) : doc.edges.find((e) => e.id === editing.id);
   $('editorTitle').textContent = node ? 'Redigera bubbla' : 'Redigera koppling';
@@ -368,6 +458,66 @@ svg.addEventListener('dblclick', (ev) => {
 $('btnEdit').onclick = $('editSelected').onclick = () => openEditor(sel);
 
 $('editKind').onchange = editorHelp;
+const arithmeticExamples = [
+  ['Addition (+)', 'summa = 8 + 3', 'Lägg ihop två tal.'],
+  ['Subtraktion (−)', 'skillnad = 8 - 3', 'Beräkna skillnaden mellan två tal.'],
+  ['Multiplikation (×)', 'produkt = 8 * 3', 'Multiplicera två tal.'],
+  ['Division (÷)', 'kvot = 8 / 3', 'Dividera två tal. Resultatet kan vara ett decimaltal.'],
+  ['Rest (%)', 'rest = 8 % 3', 'Resten vid division: 8 % 3 blir 2.'],
+  ['Parenteser', 'resultat = (8 + 3) * 2', 'Styr ordningen på beräkningen.'],
+  ['Kvadrat', 'kvadrat = 4 * 4', 'Multiplicera ett tal med sig självt.'],
+  ['Öka en räknare', 'i = i + 1', 'Öka variabeln i med ett. Ge i ett värde först, till exempel i = 0.'],
+];
+const functionExamples = {
+  arithmeticExamples,
+  mathExamples: [
+    ['Kvadratrot', 'rot = sqrt(25)', 'Kvadratroten av ett icke-negativt tal.'],
+    ['Absolutbelopp', 'belopp = abs(-8)', 'Talets avstånd från noll.'],
+    ['Potens', 'potens = pow(2, 3)', '2 upphöjt till 3 blir 8.'],
+    ['Avrunda', 'avrundat = round(3.5)', 'Närmaste heltal; halva steg avrundas uppåt.'],
+    ['Avrunda nedåt', 'nedat = floor(3.8)', 'Närmaste heltal nedåt.'],
+    ['Avrunda uppåt', 'uppat = ceil(3.2)', 'Närmaste heltal uppåt.'],
+    ['Minimum', 'minsta = min(4, 9)', 'Det minsta av två tal.'],
+    ['Maximum', 'storsta = max(4, 9)', 'Det största av två tal.'],
+  ],
+  randomExamples: [
+    ['Slumptal 0–1', 'slump = random()', 'Ett nytt decimaltal från 0 till under 1 vid varje körning.'],
+    ['Tärning 1–6', 'tarning = floor(random() * 6) + 1', 'Ett slumpmässigt heltal mellan 1 och 6.'],
+    ['Slumptal 10–20', 'slump = 10 + random() * (20 - 10)', 'Ett decimaltal från 10 till under 20.'],
+  ],
+  trigExamples: [
+    ['Sinus', 'sinus = sin(rad(30))', 'Sinus av 30 grader.'],
+    ['Cosinus', 'cosinus = cos(rad(60))', 'Cosinus av 60 grader.'],
+    ['Tangens', 'tangens = tan(rad(45))', 'Tangens av 45 grader.'],
+    ['Grader till radianer', 'radianer = rad(180)', 'Omvandla en vinkel i grader till radianer.'],
+    ['Radianer till grader', 'grader = deg(3.141592653589793)', 'Omvandla en vinkel i radianer till grader.'],
+  ],
+  logExamples: [
+    ['Naturlig logaritm', 'logaritm = ln(10)', 'Logaritm med basen e.'],
+    ['Tiologaritm', 'logaritm = log10(100)', 'Logaritm med basen 10; log10(100) blir 2.'],
+    ['Valfri logaritmbas', 'logaritm = ln(8) / ln(2)', 'Logaritm av 8 med basen 2 blir 3. Basen ska vara positiv och skild från 1.'],
+    ['Exponentialfunktion', 'exponent = exp(2)', 'e upphöjt till 2.'],
+  ],
+};
+for (const [target, examples] of Object.entries(functionExamples)) {
+for (const [name, example, description] of examples) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  const title = document.createElement('strong'); title.textContent = name;
+  const code = document.createElement('code'); code.textContent = example;
+  const help = document.createElement('span'); help.textContent = description;
+  button.append(title, code, help);
+  button.onclick = () => {
+    const field = $('editText');
+    const existing = field.value.trimEnd();
+    field.value = existing + (existing ? (existing.endsWith(';') ? '\n' : ';\n') : '') + example;
+    field.focus();
+    field.setSelectionRange(field.value.length - example.length, field.value.length);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  $(target).append(button);
+}
+}
 $('editBranch').onchange = () => { if ($('editBranch').value) $('editText').value = $('editBranch').value; };
 $('cancelEditor').onclick = () => $('editor').close();
 $('editorForm').onsubmit = (ev) => {
@@ -449,18 +599,23 @@ function setDoc(d) {
 
 $('docType').onchange = (e) => {
   const type = e.target.value;
-  if (doc.nodes.length && !confirm('Byta diagramtyp skapar ett nytt exempel. Fortsätta?')) { e.target.value = doc.type; return; }
-  setDoc(sampleDoc(type));
+  if (doc.nodes.length && !confirm('Byta diagramtyp skapar ett tomt diagram. Fortsätta?')) { e.target.value = doc.type; return; }
+  setDoc(newDoc(type));
 };
 $('btnNew').onclick = () => { if (!doc.nodes.length || confirm('Rensa diagrammet?')) setDoc(newDoc(doc.type)); };
 $('btnSample').onclick = () => setDoc(sampleDoc(doc.type));
 $('btnConnect').onclick = () => { connecting = !connecting; connectFrom = null; render(); };
 $('btnDelete').onclick = deleteSelected;
 $('btnLayout').onclick = () => { autoLayout(doc); render(); fitDiagram(); };
+function suggestedFilename(extension, date = new Date()) {
+  const prefix = { flowchart: 'flodesschema', algorithm: 'algoritm', database: 'databasdiagram', uml: 'uml-klassdiagram', org: 'organisationsschema', mindmap: 'mindmap', concept: 'begreppskarta', state: 'tillstandsdiagram' }[doc.type] ?? doc.type;
+  const pad = value => String(value).padStart(2, '0');
+  return `${prefix}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}.${extension}`;
+}
 $('btnSave').onclick = () => {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }));
-  a.download = 'yggdrasil.json';
+  a.download = suggestedFilename('json');
   a.click();
   URL.revokeObjectURL(a.href);
 };
@@ -496,7 +651,7 @@ $('downloadCode').onclick = () => {
   if (!$('generatedCode').value) return;
   const url = URL.createObjectURL(new Blob([$('generatedCode').value], { type: 'text/plain;charset=utf-8' }));
   const a = document.createElement('a'); a.href = url;
-  a.download = 'yggdrasil.' + (doc.type === 'database' ? 'sql' : $('codeLanguage').value === 'python' ? 'py' : 'js'); a.click();
+  a.download = suggestedFilename(doc.type === 'database' ? 'sql' : $('codeLanguage').value === 'python' ? 'py' : 'js'); a.click();
   URL.revokeObjectURL(url);
 };
 function showPanel(id, focus = false) {
@@ -548,7 +703,12 @@ svg.addEventListener('focusin', ev => {
   (node ?? edge).classList.add('selected'); syncAppearance();
 });
 svg.addEventListener('keydown', ev => {
-  if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEditor(sel); }
+  if (ev.key === 'Enter' || ev.key === ' ') {
+    ev.preventDefault();
+    const node = ev.target.closest('[data-node]');
+    if (node && (connecting || ev.shiftKey)) chooseConnection(node.dataset.node, ev.shiftKey);
+    else openEditor(sel);
+  }
 });
 let resizeFrame;
 window.addEventListener('resize', () => { cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(fitDiagram); });
@@ -558,7 +718,5 @@ $('zoomOut').onclick = () => setZoom(zoom - .1);
 $('fitDiagram').onclick = fitDiagram;
 $('emptySample').onclick = () => $('btnSample').click();
 $('exportJson').onclick = () => $('btnSave').click();
-document.querySelectorAll('.menu-content button').forEach(button => button.addEventListener('click', () => document.querySelector('.file-menu').open = false));
-document.addEventListener('pointerdown', ev => { if (!ev.target.closest('.file-menu')) document.querySelector('.file-menu').open = false; });
 $('generatedCode').placeholder = 'Din kod visas här när du klickar på Generera.';
 setDoc(doc);

@@ -1,7 +1,8 @@
 import { YES, NO } from './model.js';
+import { MATH_FUNCTIONS } from './math.js';
 
 // Säker uttrycksutvärderare (ingen eval).
-const TOKEN = /\s*(?:(\d+(?:\.\d+)?)|("[^"]*"|'[^']*')|([\p{L}_][\p{L}\p{N}_]*)|(==|!=|<=|>=|&&|\|\||[-+*\/%()<>!]))/uy;
+const TOKEN = /\s*(?:(\d+(?:\.\d+)?)|("[^"]*"|'[^']*')|([\p{L}_][\p{L}\p{N}_]*)|(==|!=|<=|>=|&&|\|\||[-+*\/%(),<>!]))/uy;
 const LEVELS = [['||'], ['&&'], ['==', '!='], ['<', '<=', '>', '>='], ['+', '-'], ['*', '/', '%']];
 
 function tokenize(src) {
@@ -30,6 +31,26 @@ export function parseExpr(src) {
     if (!tk) throw new Error('Uttrycket slutar för tidigt');
     if (tk.t === 'num' || tk.t === 'str') return () => tk.v;
     if (tk.t === 'id') {
+      if (peekOp(['('])) {
+        const fn = Object.hasOwn(MATH_FUNCTIONS, tk.v) ? MATH_FUNCTIONS[tk.v] : null;
+        if (!fn) throw new Error(`Okänd matematisk funktion: ${tk.v}`);
+        i++;
+        const args = [];
+        if (!peekOp([')'])) {
+          args.push(binary(0));
+          while (peekOp([','])) { i++; args.push(binary(0)); }
+        }
+        if (!peekOp([')'])) throw new Error('Saknar )');
+        i++;
+        if (args.length !== fn.args) throw new Error(`${tk.v} kräver ${fn.args} argument`);
+        return vars => {
+          const values = args.map(arg => arg(vars));
+          if (values.some(value => typeof value !== 'number' || !Number.isFinite(value))) throw new Error(`${tk.v} kräver ändliga tal`);
+          const result = fn.run(...values);
+          if (!Number.isFinite(result)) throw new Error(`Ogiltigt värde för ${tk.v}`);
+          return result;
+        };
+      }
       if (tk.v === 'true' || tk.v === 'sant') return () => true;
       if (tk.v === 'false' || tk.v === 'falskt') return () => false;
       return (vars) => {

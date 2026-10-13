@@ -10,9 +10,9 @@
     <header class="app-header">
         <a class="brand" href="./" aria-label="Yggdrasil startsida"><span class="brand-mark" aria-hidden="true">Y</span><span>Yggdrasil<small>Tänk i diagram</small></span></a>
         <span class="save-status"><span aria-hidden="true"></span>Sparas i din webbläsare</span>
-        <details class="file-menu"><summary>Mitt diagram <span aria-hidden="true">⌄</span></summary><div class="menu-content">
-            <button id="btnSave">Ladda ner diagram (.json)</button><button id="btnLoad">Öppna sparat diagram</button><button id="btnNew">Börja med tomt diagram</button>
-        </div></details>
+        <div class="file-actions" role="group" aria-label="Hantera diagram">
+            <button id="btnNew" title="Börja med ett tomt diagram">Ny</button><button id="btnLoad" title="Öppna sparat diagram">Öppna</button><button id="btnSave" title="Ladda ner diagram (.json)">Spara</button>
+        </div>
         <input type="file" id="fileLoad" accept="application/json" hidden>
     </header>
     <main class="workspace">
@@ -118,6 +118,24 @@
             <label id="kindField">Nodtyp <select id="editKind"></select></label>
             <label><span id="textLabel">Text</span><textarea id="editText" rows="5"></textarea></label>
             <p id="editHelp" class="hint"></p>
+            <details id="arithmeticLibrary" class="arithmetic-library" hidden>
+                <summary>Bibliotek med räkneoperationer</summary>
+                <p class="hint">Klicka på ett exempel för att lägga till en tilldelning. Byt sedan tal och variabelnamn efter behov. Använd semikolon mellan tilldelningar.</p>
+                <div id="arithmeticExamples" class="arithmetic-examples"></div>
+                <details class="math-functions">
+                    <summary>Matematiska funktioner</summary>
+                    <p class="hint">Argument skrivs inom parentes och skiljs åt med komma.</p>
+                    <h3>Tal och avrundning</h3><div id="mathExamples" class="arithmetic-examples"></div>
+                    <h3>Slumptal</h3><div id="randomExamples" class="arithmetic-examples"></div>
+                    <h3>Trigonometri</h3>
+                    <p class="hint">sin, cos och tan använder radianer. Omvandla grader med rad, till exempel sin(rad(30)).</p>
+                    <div id="trigExamples" class="arithmetic-examples"></div>
+                    <h3>Logaritmer och exponentialfunktion</h3>
+                    <p class="hint">Logaritmer kräver ett tal större än noll.</p>
+                    <div id="logExamples" class="arithmetic-examples"></div>
+                </details>
+                <p class="hint">Variabler måste ha fått ett värde innan de används. Använd punkt för decimaltal. Division och rest kräver en nämnare som inte är noll.</p>
+            </details>
             <label id="detailsField"><span id="detailsLabel">Detaljer</span><textarea id="editDetails" rows="3"></textarea></label>
             <div id="databaseFields" hidden>
                 <label>Kolumner (en per rad)<textarea id="editColumns" rows="8" placeholder="id INTEGER PK&#10;name VARCHAR(100) NOT NULL"></textarea></label>
