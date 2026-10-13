@@ -50,3 +50,16 @@ Arbetsytan följer tre steg: välj diagramtyp, lägg till delar och redigera dem
 Markera en del och välj Redigera, eller dubbelklicka direkt. Utseendet finns i fliken Redigera. Fliken Kontrollera ger vägledning och algoritmsimulering; Exportera samlar JSON, kod, SQL och Mermaid. Menyn Mitt diagram öppnar sparade filer och skapar tomma diagram. Kopplingsverktyget visar vilken del du ska välja och avslutas efter kopplingen. Escape avbryter.
 
 Zooma med +/− eller välj Visa hela. Ordna automatiskt placerar delarna och anpassar vyn. På små skärmar staplas panelerna. Tab navigerar mellan kontroller och diagramdelar; Enter öppnar delens editor. Verktygsflikarna stöder piltangenter.
+
+## Använd mermaid 
+Genom att ange Mermaidkod kan man rita upp diagram
+```mermaid
+flowchart TD
+  n1(("Projektidé"))
+  n2(("Mål"))
+  n3(("Resurser"))
+  n4(("Aktiviteter"))
+  n1 --> n2
+  n1 --> n3
+  n1 --> n4
+```
