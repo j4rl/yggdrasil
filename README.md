@@ -53,6 +53,18 @@ Zooma med +/− eller välj Visa hela. Ordna automatiskt placerar delarna och an
 
 ## Använd mermaid 
 Genom att ange Mermaidkod kan man rita upp diagram
+Koden nedan ger diagrammet längst ned:
+```
+flowchart TD
+  n1(("Projektidé"))
+  n2(("Mål"))
+  n3(("Resurser"))
+  n4(("Aktiviteter"))
+  n1 --> n2
+  n1 --> n3
+  n1 --> n4
+```
+
 ```mermaid
 flowchart TD
   n1(("Projektidé"))
