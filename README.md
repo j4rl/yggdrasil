@@ -75,6 +75,31 @@ Markera en del och välj Redigera, eller dubbelklicka direkt. Utseendet finns i 
 
 Zooma med +/− eller välj Visa hela. Ordna automatiskt placerar delarna och anpassar vyn. På små skärmar staplas panelerna. Tab navigerar mellan kontroller och diagramdelar; Enter eller mellanslag öppnar delens editor. När Koppla är aktivt väljer samma tangenter käll- och målobjekt. Verktygsflikarna stöder piltangenter.
 
+## Använd mermaid 
+Genom att ange Mermaidkod kan man rita upp diagram
+Koden nedan ger diagrammet längst ned:
+```
+flowchart TD
+  n1(("Projektidé"))
+  n2(("Mål"))
+  n3(("Resurser"))
+  n4(("Aktiviteter"))
+  n1 --> n2
+  n1 --> n3
+  n1 --> n4
+```
+
+```mermaid
+flowchart TD
+  n1(("Projektidé"))
+  n2(("Mål"))
+  n3(("Resurser"))
+  n4(("Aktiviteter"))
+  n1 --> n2
+  n1 --> n3
+  n1 --> n4
+```
+
 ## Tester
 
 Kör från projektets rot. Matematiktestet kontrollerar även alla biblioteksexempel och export till JavaScript och Python:
